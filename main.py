@@ -44,8 +44,8 @@ class ItemSearchModal(discord.ui.Modal, title='ค้นหาไอเทม Po
         
         try:
             params = {'league': self.selected_league}
-            res_items = requests.get("https://poe2scout.com/api/items", params=params).json()
-            res_leagues = requests.get("https://poe2scout.com/api/leagues").json()
+            res_items = requests.get("https://poe2scout.com/api/items", params=params,timeout=10).json()
+            res_leagues = requests.get("https://poe2scout.com/api/leagues", params=params,timeout=10).json()
 
             # ดึงเรทแลกเปลี่ยนจาก API
             ex_per_divine = 100 # เรทสมมติ: 1 Divine = 100 Exalted
@@ -113,6 +113,7 @@ class LeagueView(discord.ui.View):
 
 
 @bot.command()
+@commands.cooldown(1, 5, commands.BucketType.user)  # 1 ครั้ง ต่อ 5 วิ ต่อ user
 async def check_rate(ctx):
     try:
         res_leagues = requests.get("https://poe2scout.com/api/leagues").json()
@@ -144,5 +145,10 @@ async def poe2(interaction: discord.Interaction):
         await interaction.response.send_message("กรุณาเลือกลีกที่ต้องการ:", view=LeagueView(options), ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"⚠️ ไม่สามารถดึงรายชื่อลีกได้: {e}", ephemeral=True)
+
+@check_rate.error
+async def check_rate_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ รออีก {error.retry_after:.1f} วินาที")
         
 bot.run(TOKEN)
