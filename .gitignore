@@ -1,6 +1,5 @@
 .env
 main_ver1.py
 test_con.py
-Dockerfile
 __pycache__/
 *.pyc
