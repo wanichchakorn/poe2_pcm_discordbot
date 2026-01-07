@@ -40,7 +40,7 @@ class ItemSearchModal(discord.ui.Modal, title='ค้นหาไอเทม Po
         self.selected_league = selected_league
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message(f"🔍 กำลังคำนวณราคา...", ephemeral=True)
+        await interaction.response.send_message(f"🔍 กำลังค้นหาข้อมูล...", ephemeral=True)
         
         try:
             params = {'league': self.selected_league}
