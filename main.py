@@ -4,6 +4,7 @@ import requests
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from thefuzz import process, fuzz
 
 # โหลดค่าจากไฟล์ .env
 load_dotenv()
@@ -43,59 +44,71 @@ class ItemSearchModal(discord.ui.Modal, title='ค้นหาไอเทม Po
         await interaction.response.send_message(f"🔍 กำลังค้นหาข้อมูล...", ephemeral=True)
         
         try:
+            # 1. ดึงข้อมูลจาก API
             params = {'league': self.selected_league}
-            res_items = requests.get("https://poe2scout.com/api/items", params=params,timeout=10).json()
-            res_leagues = requests.get("https://poe2scout.com/api/leagues", params=params,timeout=10).json()
+            res_items = requests.get("https://poe2scout.com/api/items", params=params, timeout=10).json()
+            res_leagues = requests.get("https://poe2scout.com/api/leagues", timeout=10).json()
 
-            # ดึงเรทแลกเปลี่ยนจาก API
-            ex_per_divine = 100 # เรทสมมติ: 1 Divine = 100 Exalted
-            ex_per_chaos = 5     # เรทสมมติ: 1 Chaos = 5 Exalted
-            
+            # 2. เตรียมข้อมูลเรทเงิน
+            ex_per_divine = 100 
+            ex_per_chaos = 5     
             for l in res_leagues:
                 if l['value'] == self.selected_league:
-                    # สมมติว่า divinePrice คือจำนวน Exalted ต่อ 1 Divine
                     ex_per_divine = l.get('divinePrice', 100)
-                    # สมมติว่า chaosDivinePrice คือจำนวน Chaos ต่อ 1 Divine
-                    # เราต้องหา Ex per Chaos: (Ex/Div) / (Chaos/Div) = Ex/Chaos
                     chaos_per_divine = l.get('chaosDivinePrice', 20)
                     ex_per_chaos = ex_per_divine / chaos_per_divine
                     break
 
-            # ค้นหาไอเทม
+            # 3. เตรียมข้อมูลไอเทมสำหรับการค้นหาคำใกล้เคียง
             items_list = res_items if isinstance(res_items, list) else res_items.get("items", [])
-            found = next((i for i in items_list if self.item_name.value.lower() in (i.get('text') or i.get('name') or "").lower()), None)
-            
-            if found:
+            item_map = {}
+            for item in items_list:
+                name = item.get('text') or item.get('name')
+                if name:
+                    item_map[name] = item
+
+            # 4. ใช้ Fuzzy Search หาคำที่ใกล้เคียงที่สุด
+            user_input = self.item_name.value
+            best_match_name, score = process.extractOne(
+                user_input, 
+                item_map.keys(), 
+                scorer=fuzz.token_set_ratio
+            )
+
+            # 5. ตรวจสอบความแม่นยำ (ถ้า score > 60 ถือว่าใช้ได้)
+            if score > 60:
+                found = item_map[best_match_name]
                 price_in_ex = found.get('currentPrice', 0)
                 
-                # --- Logic การแปลงตามลำดับความแพง (Ex < Chaos < Divine) ---
+                # --- Logic การแปลงหน่วยเงิน ---
                 if price_in_ex >= ex_per_divine:
-                    # ถ้าแพงกว่า 1 Divine
                     final_price = price_in_ex / ex_per_divine
                     display_text = f"**{final_price:,.2f} Divine Orb**"
-                    color = 0x00ffff # สีฟ้า Divine
+                    color = 0x00ffff 
                 elif price_in_ex >= ex_per_chaos:
-                    # ถ้าแพงกว่า 1 Chaos แต่ไม่ถึง Divine
                     final_price = price_in_ex / ex_per_chaos
                     display_text = f"**{final_price:,.2f} Chaos Orb**"
-                    color = 0x964B00 # สีน้ำตาล Chaos
+                    color = 0x964B00 
                 else:
-                    # ราคาถูกที่สุด แสดงเป็น Exalted
                     display_text = f"**{price_in_ex:,.0f} Exalted Orb**"
-                    color = 0xe91e63 # สีชมพู Exalted
+                    color = 0xe91e63 
 
-                embed = discord.Embed(title=f"💰 ราคา {self.selected_league}", color=color)
-                embed.add_field(name="ไอเทม", value=found.get('text') or found.get('name'), inline=False)
-                embed.add_field(name="ราคาตลาด", value=display_text, inline=True)
-                embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine} Ex")
+                embed = discord.Embed(title=f"💰 ราคาตลาด: {self.selected_league}", color=color)
+                embed.add_field(name="ไอเทมที่พบ", value=f"**{best_match_name}** (แม่นยำ {score}%)", inline=False)
+                embed.add_field(name="ราคาปัจจุบัน", value=display_text, inline=True)
                 
+                # ใส่รูปไอเทมถ้ามี
+                if found.get('iconUrl'):
+                    embed.set_thumbnail(url=found.get('iconUrl'))
+                    
+                embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine} Ex")
                 await interaction.followup.send(embed=embed)
             else:
-                await interaction.followup.send(f"❌ ไม่พบไอเทม '{self.item_name.value}'")
-                
+                await interaction.followup.send(f"❌ ไม่พบไอเทมที่ใกล้เคียงกับ '{user_input}'")
+
         except Exception as e:
             print(f"Error: {e}")
-            await interaction.followup.send("⚠️ เกิดข้อผิดพลาด")
+            await interaction.followup.send("⚠️ เกิดข้อผิดพลาดขณะดึงข้อมูลหรือค้นหา")
 
 # --- ส่วนของ Select Menu (แถบเลือกลีก) ---
 class LeagueSelect(discord.ui.Select):
