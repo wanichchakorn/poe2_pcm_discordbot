@@ -4,6 +4,23 @@ import requests
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
+
+#โค้ดหลอกเว็บ cloud huggingface
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=7860)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+#-----------------------------
 
 # โหลดค่าจากไฟล์ .env
 load_dotenv()
@@ -145,4 +162,5 @@ async def poe2(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"⚠️ ไม่สามารถดึงรายชื่อลีกได้: {e}", ephemeral=True)
 
+keep_alive() # เรียกฟังก์ชันหลอกระบบ cloud
 bot.run(TOKEN)
