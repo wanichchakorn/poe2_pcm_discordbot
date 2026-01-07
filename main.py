@@ -90,11 +90,11 @@ class ItemSearchModal(discord.ui.Modal, title='ค้นหาไอเทม Po
                     display_text = f"**{final_price:,.2f} Chaos Orb**"
                     color = 0x964B00 
                 else:
-                    display_text = f"**{price_in_ex:,.0f} Exalted Orb**"
+                    display_text = f"**{price_in_ex:,.2f} Exalted Orb**"
                     color = 0xe91e63 
 
                 embed = discord.Embed(title=f"💰 ราคาตลาด: {self.selected_league}", color=color)
-                embed.add_field(name="ไอเทมที่พบ", value=best_match_name, inline=False)
+                embed.add_field(name="ชื่อไอเทม", value=best_match_name, inline=False)
                 #embed.add_field(name="ไอเทมที่พบ", value=f"**{best_match_name}** (แม่นยำ {score}%)", inline=False)
                 embed.add_field(name="ราคาปัจจุบัน", value=display_text, inline=True)
                 
