@@ -1,0 +1,5 @@
+.env
+main_ver1.py
+test_con.py
+__pycache__/
+*.pyc
