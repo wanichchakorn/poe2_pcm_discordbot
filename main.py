@@ -1,167 +1,291 @@
 import discord
 import os
 import requests
-from discord import app_commands
-from discord.ext import commands
-from dotenv import load_dotenv
-from thefuzz import process, fuzz
+import time
 
-# โหลดค่าจากไฟล์ .env
+from discord.ext import commands
+from discord import app_commands
+from dotenv import load_dotenv
+
+# ==================================================
+# โหลด Environment Variable (.env ใช้ตอนรัน local)
+# Railway จะใช้ Environment Variable ของระบบแทน
+# ==================================================
 load_dotenv()
 
-# ดึง Token มาจาก Environment Variable
-TOKEN = os.getenv('DISCORD_TOKEN')
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-# ตรวจสอบว่าโหลด Token สำเร็จไหม (กัน Error)
-if TOKEN is None:
-    print("❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env หรือ Environment Variable")
+# กันกรณีลืมตั้งค่า Token
+if not TOKEN:
+    print("❌ ไม่พบ DISCORD_TOKEN")
     exit()
 
-# --- ตั้งค่าเริ่มต้น ---
-#TOKEN = '' # Token 
+# ==================================================
+# CONFIG / CONSTANTS
+# ==================================================
 
+API_TIMEOUT = 10        # timeout (วินาที) ป้องกัน API ค้าง
+ITEM_CACHE_TTL = 60     # cache รายชื่อไอเทมต่อลีก (วินาที)
+USER_COOLDOWN = 5       # cooldown ต่อ user (วินาที)
+
+# cache รายชื่อไอเทม แยกตาม league
+# โครงสร้าง:
+# {
+#   "League Name": {
+#       "time": timestamp,
+#       "items": [ชื่อไอเทม, ...]
+#   }
+# }
+item_cache = {}
+
+# เก็บเวลาล่าสุดที่ user ใช้คำสั่ง
+# { user_id: timestamp }
+user_cooldowns = {}
+
+# ==================================================
+# BOT CLASS
+# ==================================================
 class POE2Bot(commands.Bot):
+    """
+    คลาสหลักของ Discord Bot
+    ใช้ commands.Bot เพื่อรองรับทั้ง prefix และ slash command
+    """
+
     def __init__(self):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(
+            command_prefix="!",
+            intents=intents
+        )
 
     async def setup_hook(self):
-        # ลงทะเบียน Slash Command
+        """
+        ถูกเรียกตอนบอทเริ่มทำงาน
+        ใช้ sync slash command กับ Discord
+        """
         await self.tree.sync()
-        print(f"Synced slash commands for {self.user}")
+        print("✅ Slash commands synced")
 
 bot = POE2Bot()
 
-# --- ส่วนของ Modal (หน้าต่างกรอกชื่อไอเทม) ---
-class ItemSearchModal(discord.ui.Modal, title='ค้นหาไอเทม PoE 2'):
-    item_name = discord.ui.TextInput(label='ชื่อไอเทมหรือค่าเงิน', placeholder='เช่น Divine Orb, Exalted...')
+# ==================================================
+# HELPER FUNCTIONS
+# ==================================================
 
-    def __init__(self, selected_league):
-        super().__init__()
-        self.selected_league = selected_league
+def check_user_cooldown(user_id: int):
+    """
+    ตรวจ cooldown ต่อ user
+    ถ้ายังติด cooldown → return เวลาที่ต้องรอ
+    ถ้าไม่ติด → บันทึกเวลาใหม่ และ return 0
+    """
+    now = time.time()
+    last_used = user_cooldowns.get(user_id, 0)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message(f"🔍 กำลังค้นหาข้อมูล...", ephemeral=True)
-        
-        try:
-            # 1. ดึงข้อมูลจาก API
-            params = {'league': self.selected_league}
-            res_items = requests.get("https://poe2scout.com/api/items", params=params, timeout=10).json()
-            res_leagues = requests.get("https://poe2scout.com/api/leagues", timeout=10).json()
+    if now - last_used < USER_COOLDOWN:
+        return USER_COOLDOWN - (now - last_used)
 
-            # 2. เตรียมข้อมูลเรทเงิน
-            ex_per_divine = 100 
-            ex_per_chaos = 5     
-            for l in res_leagues:
-                if l['value'] == self.selected_league:
-                    ex_per_divine = l.get('divinePrice', 100)
-                    chaos_per_divine = l.get('chaosDivinePrice', 20)
-                    ex_per_chaos = ex_per_divine / chaos_per_divine
-                    break
-
-            # 3. เตรียมข้อมูลไอเทมสำหรับการค้นหาคำใกล้เคียง
-            items_list = res_items if isinstance(res_items, list) else res_items.get("items", [])
-            item_map = {}
-            for item in items_list:
-                name = item.get('text') or item.get('name')
-                if name:
-                    item_map[name] = item
-
-            # 4. ใช้ Fuzzy Search หาคำที่ใกล้เคียงที่สุด
-            user_input = self.item_name.value
-            best_match_name, score = process.extractOne(
-                user_input, 
-                item_map.keys(), 
-                scorer=fuzz.token_set_ratio
-            )
-
-            # 5. ตรวจสอบความแม่นยำ (ถ้า score > 60 ถือว่าใช้ได้)
-            if score > 60:
-                found = item_map[best_match_name]
-                price_in_ex = found.get('currentPrice', 0)
-                
-                # --- Logic การแปลงหน่วยเงิน ---
-                if price_in_ex >= ex_per_divine:
-                    final_price = price_in_ex / ex_per_divine
-                    display_text = f"**{final_price:,.2f} Divine Orb**"
-                    color = 0x00ffff 
-                elif price_in_ex >= ex_per_chaos:
-                    final_price = price_in_ex / ex_per_chaos
-                    display_text = f"**{final_price:,.2f} Chaos Orb**"
-                    color = 0x964B00 
-                else:
-                    display_text = f"**{price_in_ex:,.0f} Exalted Orb**"
-                    color = 0xe91e63 
-
-                embed = discord.Embed(title=f"💰 ราคาตลาด: {self.selected_league}", color=color)
-                embed.add_field(name="ไอเทมที่พบ", value=f"**{best_match_name}** (แม่นยำ {score}%)", inline=False)
-                embed.add_field(name="ราคาปัจจุบัน", value=display_text, inline=True)
-                
-                # ใส่รูปไอเทมถ้ามี
-                if found.get('iconUrl'):
-                    embed.set_thumbnail(url=found.get('iconUrl'))
-                    
-                embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine} Ex")
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.followup.send(f"❌ ไม่พบไอเทมที่ใกล้เคียงกับ '{user_input}'")
-
-        except Exception as e:
-            print(f"Error: {e}")
-            await interaction.followup.send("⚠️ เกิดข้อผิดพลาดขณะดึงข้อมูลหรือค้นหา")
-
-# --- ส่วนของ Select Menu (แถบเลือกลีก) ---
-class LeagueSelect(discord.ui.Select):
-    def __init__(self, options):
-        super().__init__(placeholder="เลือกลีกที่ต้องการค้นหา...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        # เมื่อเลือกลีกเสร็จ ให้เปิด Modal กรอกชื่อไอเทมทันที
-        await interaction.response.send_modal(ItemSearchModal(self.values[0]))
-
-class LeagueView(discord.ui.View):
-    def __init__(self, options):
-        super().__init__()
-        self.add_item(LeagueSelect(options))
+    user_cooldowns[user_id] = now
+    return 0
 
 
-@bot.command()
-@commands.cooldown(1, 5, commands.BucketType.user)  # 1 ครั้ง ต่อ 5 วิ ต่อ user
-async def check_rate(ctx):
+def get_exchange_rate(league: str):
+    """
+    ดึงเรทค่าเงินจาก poe2scout
+    - Exalted ต่อ Divine
+    - Exalted ต่อ Chaos
+    """
+    res = requests.get(
+        "https://poe2scout.com/api/leagues",
+        timeout=API_TIMEOUT
+    ).json()
+
+    # ค่า default เผื่อ API เปลี่ยน
+    ex_per_div = 100
+    ex_per_chaos = 5
+
+    for l in res:
+        if l["value"] == league:
+            ex_per_div = l.get("divinePrice", 100)
+            chaos_per_div = l.get("chaosDivinePrice", 20)
+
+            # แปลง Chaos → Exalted
+            ex_per_chaos = ex_per_div / chaos_per_div
+            break
+
+    return ex_per_div, ex_per_chaos
+
+
+def get_items_for_league(league: str):
+    """
+    ดึงรายชื่อไอเทมของลีก
+    ใช้ cache เพื่อลดการเรียก API ซ้ำ
+    """
+    now = time.time()
+    cached = item_cache.get(league)
+
+    # ใช้ cache ถ้ายังไม่หมดอายุ
+    if cached and now - cached["time"] < ITEM_CACHE_TTL:
+        return cached["items"]
+
+    # ดึงข้อมูลใหม่จาก API
+    res = requests.get(
+        "https://poe2scout.com/api/items",
+        params={"league": league},
+        timeout=API_TIMEOUT
+    ).json()
+
+    # ดึงเฉพาะชื่อไอเทม
+    items = [
+        i.get("text") or i.get("name")
+        for i in res
+        if i.get("text") or i.get("name")
+    ]
+
+    # เก็บลง cache
+    item_cache[league] = {
+        "time": now,
+        "items": items
+    }
+
+    return items
+
+# ==================================================
+# AUTOCOMPLETE FUNCTION
+# ==================================================
+async def item_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+):
+    """
+    ฟังก์ชัน autocomplete
+    จะถูกเรียก "ทุกครั้งที่ user พิมพ์"
+    ดังนั้น:
+    - ห้ามเรียก API ตรง ๆ
+    - ต้องใช้ cache เท่านั้น
+    """
+
+    league = interaction.namespace.league
+    if not league:
+        return []
+
     try:
-        res_leagues = requests.get("https://poe2scout.com/api/leagues").json()
-        target_league = "Fate of the Vaal"
-        
-        for l in res_leagues:
-            if l['value'] == target_league:
-                # พิมพ์ค่าทั้งหมดออกมาดูเพื่อความชัวร์
-                await ctx.send(f"📊 **League: {target_league}**\n"
-                               f"- divinePrice (Ex per Div?): `{l.get('divinePrice')}`\n"
-                               f"- chaosDivinePrice (Chaos per Div?): `{l.get('chaosDivinePrice')}`")
-                return
-    except Exception as e:
-        await ctx.send(f"Error: {e}")
+        items = get_items_for_league(league)
+    except:
+        return []
 
-# --- Slash Command /poe2 ---
-@bot.tree.command(name="poe2", description="เช็คราคาไอเทมโดยเลือกลีกก่อน")
-async def poe2(interaction: discord.Interaction):
+    # filter ตามตัวอักษรที่ user พิมพ์
+    matches = [
+        app_commands.Choice(name=name, value=name)
+        for name in items
+        if current.lower() in name.lower()
+    ]
+
+    # Discord จำกัด autocomplete ไม่เกิน 25 ตัว
+    return matches[:25]
+
+# ==================================================
+# SLASH COMMAND: /poe2
+# ==================================================
+@bot.tree.command(
+    name="poe2",
+    description="เช็คราคาไอเทม PoE2"
+)
+@app_commands.describe(
+    league="เลือกลีก",
+    item="ชื่อไอเทม"
+)
+@app_commands.autocomplete(item=item_autocomplete)
+async def poe2(
+    interaction: discord.Interaction,
+    league: str,
+    item: str
+):
+    """
+    Slash command หลักของบอท
+    flow:
+    1) เช็ค cooldown
+    2) ดึงเรทค่าเงิน
+    3) ดึงข้อมูลไอเทม
+    4) แปลงราคา
+    5) ส่ง embed
+    """
+
+    # -------- cooldown --------
+    wait = check_user_cooldown(interaction.user.id)
+    if wait > 0:
+        await interaction.response.send_message(
+            f"⏳ กรุณารออีก {wait:.1f} วินาที",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        f"🔍 กำลังค้นหา **{item}** ในลีก **{league}**...",
+        ephemeral=True
+    )
+
     try:
-        # ดึงรายชื่อลีกจาก API
-        res = requests.get("https://poe2scout.com/api/leagues").json()
-        
-        # สร้างตัวเลือกจาก JSON (ใช้ค่า 'value')
-        options = [
-            discord.SelectOption(label=l['value'], value=l['value']) 
-            for l in res[:25] # Discord จำกัด Select Menu ได้ไม่เกิน 25 รายการ
-        ]
-        
-        await interaction.response.send_message("กรุณาเลือกลีกที่ต้องการ:", view=LeagueView(options), ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"⚠️ ไม่สามารถดึงรายชื่อลีกได้: {e}", ephemeral=True)
+        # ดึงเรทค่าเงิน
+        ex_per_div, ex_per_chaos = get_exchange_rate(league)
 
-@check_rate.error
-async def check_rate_error(ctx, error):
-    if isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏳ รออีก {error.retry_after:.1f} วินาที")
-        
+        # ดึงข้อมูลไอเทมทั้งหมด
+        res = requests.get(
+            "https://poe2scout.com/api/items",
+            params={"league": league},
+            timeout=API_TIMEOUT
+        ).json()
+
+        # หาไอเทมที่ตรงกับชื่อที่เลือก
+        data = next(
+            (
+                i for i in res
+                if (i.get("text") or i.get("name", "")).lower()
+                == item.lower()
+            ),
+            None
+        )
+
+        if not data:
+            await interaction.followup.send("❌ ไม่พบไอเทม")
+            return
+
+        price_ex = data.get("currentPrice", 0)
+
+        # -------- แปลงราคา --------
+        if price_ex >= ex_per_div:
+            price = price_ex / ex_per_div
+            text = f"{price:,.2f} Divine Orb"
+            color = 0x00ffff
+        elif price_ex >= ex_per_chaos:
+            price = price_ex / ex_per_chaos
+            text = f"{price:,.2f} Chaos Orb"
+            color = 0x964B00
+        else:
+            text = f"{price_ex:,.0f} Exalted Orb"
+            color = 0xe91e63
+
+        # -------- Embed --------
+        embed = discord.Embed(
+            title=f"💰 ราคาในลีก {league}",
+            color=color
+        )
+        embed.add_field(name="ไอเทม", value=item, inline=False)
+        embed.add_field(name="ราคาตลาด", value=f"**{text}**", inline=True)
+        embed.set_footer(
+            text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_div} Ex"
+        )
+
+        await interaction.followup.send(embed=embed)
+
+    except requests.exceptions.Timeout:
+        await interaction.followup.send(
+            "⏳ API ตอบช้าเกินไป กรุณาลองใหม่"
+        )
+    except Exception as e:
+        print("ERROR:", e)
+        await interaction.followup.send("⚠️ เกิดข้อผิดพลาด")
+
+# ==================================================
+# RUN BOT
+# ==================================================
 bot.run(TOKEN)
