@@ -1,144 +1,145 @@
 import discord
 import os
 import requests
-import asyncio
+import datetime
+import json
+from urllib.parse import quote
 from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from thefuzz import process, fuzz
 
-# POE2_PCM_Bot(Discord) v0.2 by Shork_Shark
-# --- 1. Token ---
+# POE2_PCM_Bot v0.3 by Shork_Shark & Gemini
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-
-if TOKEN is None:
-    print("❌ ไม่พบ DISCORD_TOKEN")
-    exit()
 
 class POE2PCMBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
-        # สร้างตัวแปรเก็บรายชื่อไอเทมสำหรับ Autocomplete
         self.item_cache = []
+        self.item_id_map = {}
 
     async def setup_hook(self):
-        # เริ่มต้นดึงข้อมูลไอเทมเข้า Cache ทันทีที่บอทเปิด
         self.update_item_cache.start()
         await self.tree.sync()
-        print(f"✅ Synced slash commands for {self.user}")
+        print(f"✅ บอทออนไลน์และ Sync Commands เรียบร้อย!")
 
-    # ดึงรายชื่อไอเทมมาเก็บไว้ทุกๆ 60 นาที เพื่อความรวดเร็วในการแสดงผล Autocomplete
     @tasks.loop(minutes=60)
     async def update_item_cache(self):
         try:
-            # ดึงข้อมูลจากลีกหลัก (เช่น Fate of the Vaal)
-            res = requests.get("https://poe2scout.com/api/items?league=Fate%20of%20the%20Vaal", timeout=10).json()
-            items = res if isinstance(res, list) else res.get("items", [])
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            url = "https://poe2scout.com/api/items"
+            # ดึงข้อมูลจากลีกหลักเพื่อทำ Cache ชื่อไอเทม
+            response = requests.get(url, params={'league': 'Fate of the Vaal'}, headers=headers, timeout=15)
+            items_list = response.json() if isinstance(response.json(), list) else response.json().get('items', [])
             
-            new_cache = []
-            new_id_map = {}
-
-            for i in items:
+            temp_cache = []
+            temp_id_map = {}
+            for i in items_list:
                 name = i.get('text') or i.get('name')
-                item_id = i.get('id') # ดึง ID ของไอเทมมาด้วย
-            
+                item_id = i.get('itemId')
                 if name and item_id:
-                    new_cache.append(name)
-                    new_id_map[name] = item_id # เก็บ Map ระหว่าง ชื่อ -> ID
+                    temp_cache.append(name)
+                    temp_id_map[name] = item_id
 
-            # อัปเดตตัวแปรของคลาส
-            self.item_cache = sorted(list(set(new_cache)))
-            self.item_id_map = new_id_map
-            
-            print(f"🔄 อัปเดต Cache สำเร็จ: {len(self.item_cache)} รายการ (พร้อม ID)")
-        
-            # ตัวอย่างการตรวจสอบ ID ใน Console
-            if "Divine Orb" in self.item_id_map:
-                print(f"📍 Divine Orb ID: {self.item_id_map['Divine Orb']}")
-
+            self.item_cache = sorted(list(set(temp_cache)))
+            self.item_id_map = temp_id_map
+            print(f"🔄 อัปเดต Cache สำเร็จ: {len(self.item_cache)} รายการ")
         except Exception as e:
-            print(f"⚠️ ไม่สามารถอัปเดต Cache ได้: {e}")
+            print(f"⚠️ Cache Error: {e}")
 
 bot = POE2PCMBot()
 
-# --- 2. คำสั่งหลัก /price (พร้อม Autocomplete) ---
-@bot.tree.command(name="price", description="บอทเช็คราคาไอเทมจาก POE2SCOUT")
-@app_commands.describe(
-    league="เลือกลีกที่ต้องการ",
-    item_name="พิมพ์ชื่อไอเทม"
-)
+# --- ฟังก์ชันวาดกราฟเส้น ---
+def generate_chart_url(item_name, history_list):
+    history_list.reverse() # เรียงจากอดีตไปปัจจุบัน
+    labels = []
+    prices = []
+    for entry in history_list:
+        dt = datetime.datetime.fromtimestamp(entry.get('Epoch'))
+        labels.append(dt.strftime('%H:%M'))
+        price = entry.get('Data', {}).get('CurrencyOneData', {}).get('RelativePrice', 0)
+        prices.append(float(price))
+
+    chart_config = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [{
+                "label": "Price (Ex)",
+                "data": prices,
+                "borderColor": "#5de2e7", 
+                "backgroundColor": "rgba(93, 226, 231, 0.1)",
+                "fill": True,
+                "pointRadius": 0,
+                "lineTension": 0.3
+            }]
+        },
+        "options": {
+            "title": {"display": True, "text": f"24h Trend: {item_name}", "fontColor": "#fff"},
+            "legend": {"display": False},
+            "scales": {
+                "yAxes": [{"ticks": {"fontColor": "#ccc"}}],
+                "xAxes": [{"ticks": {"fontColor": "#ccc", "maxRotation": 45}}]
+            }
+        }
+    }
+    return f"https://quickchart.io/chart?c={quote(json.dumps(chart_config))}"
+
+# --- คำสั่งหลัก /price ---
+@bot.tree.command(name="price", description="เช็คราคาไอเทมและดูประวัติกราฟ")
+@app_commands.describe(league="เลือกลีก", item_name="พิมพ์ชื่อไอเทม")
 async def price(interaction: discord.Interaction, league: str, item_name: str):
-    # ใช้ defer เพื่อบอก Discord ว่าบอทกำลังประมวลผล (ป้องกัน Error 3 วินาที)
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer() # ป้องกัน Timeout
     
     try:
-        # 1. ดึงข้อมูลราคาและเรทเงิน
-        params = {'league': league}
-        res_items = requests.get("https://poe2scout.com/api/items", params=params, timeout=10).json()
-        res_leagues = requests.get("https://poe2scout.com/api/leagues", timeout=10).json()
+        # 1. ค้นหาชื่อไอเทมที่ใกล้เคียงที่สุดจาก Cache
+        best_match, score = process.extractOne(item_name, bot.item_id_map.keys(), scorer=fuzz.token_set_ratio)
+        if score < 60:
+            await interaction.followup.send(f"❌ ไม่พบไอเทม '{item_name}'")
+            return
 
-        # 2. คำนวณเรทเงิน
-        ex_per_divine, ex_per_chaos = 100, 5
-        for l in res_leagues:
-            if l['value'] == league:
-                ex_per_divine = l.get('divinePrice', 100)
-                chaos_div_price = l.get('chaosDivinePrice', 20)
-                ex_per_chaos = ex_per_divine / chaos_div_price
-                break
+        item_id = bot.item_id_map[best_match]
+        ex_id = bot.item_id_map.get("Exalted Orb", 450)
+        headers = {'User-Agent': 'Mozilla/5.0'}
 
-        # 3. ค้นหาไอเทม (ใช้ Fuzzy Search เพื่อความชัวร์หากผู้ใช้ไม่เลือกจาก List)
-        items_list = res_items if isinstance(res_items, list) else res_items.get("items", [])
-        item_map = { (i.get('text') or i.get('name')): i for i in items_list if i.get('text') or i.get('name') }
+        # 2. ดึงประวัติราคา (PairHistory)
+        history_url = "https://poe2scout.com/api/currencyExchange/PairHistory"
+        h_res = requests.get(history_url, params={
+            'league': league, 'currencyOneItemId': item_id, 
+            'currencyTwoItemId': ex_id, 'limit': 24
+        }, headers=headers).json()
         
-        best_match, score = process.extractOne(item_name, item_map.keys(), scorer=fuzz.token_set_ratio)
-
-        if score > 60:
-            found = item_map[best_match]
-            price_in_ex = found.get('currentPrice', 0)
-            
-            # Logic การแปลงหน่วย (ทศนิยม 2 ตำแหน่ง)
-            if price_in_ex >= ex_per_divine:
-                val, unit, color = price_in_ex / ex_per_divine, "Divine Orb", 0x00ffff
-            elif price_in_ex >= ex_per_chaos:
-                val, unit, color = price_in_ex / ex_per_chaos, "Chaos Orb", 0x964B00
-            else:
-                val, unit, color = price_in_ex, "Exalted Orb", 0xe91e63
-
-            embed = discord.Embed(title=f"💰 ราคาตลาด: {league}", color=color)
-            embed.add_field(name="ชื่อไอเทม", value=f"**{best_match}**", inline=False)
-            embed.add_field(name="ราคาปัจจุบัน", value=f"**{val:,.2f} {unit}**", inline=True)
-            
-            if found.get('iconUrl'):
-                embed.set_thumbnail(url=found.get('iconUrl'))
-            
-            embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine:.3f} Ex")
-            await interaction.followup.send(embed=embed)
+        history_list = h_res.get("History", [])
+        
+        # 3. สร้าง Embed และแนบกราฟ
+        embed = discord.Embed(title=f"💎 Market Info: {best_match}", color=0x5de2e7)
+        
+        if history_list:
+            current_price = history_list[0].get('Data', {}).get('CurrencyOneData', {}).get('RelativePrice', 0)
+            embed.description = f"ราคาปัจจุบัน: **{float(current_price):,.2f} Ex**"
+            chart_url = generate_chart_url(best_match, history_list)
+            embed.set_image(url=chart_url)
         else:
-            await interaction.followup.send(f"❌ ไม่พบข้อมูลไอเทม '{item_name}'")
+            embed.description = "⚠️ พบไอเทมแต่ไม่พบประวัติราคาล่าสุด"
+
+        embed.set_footer(text=f"League: {league} | Data from poe2scout.com")
+        await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        print(f"Error: {e}")
-        await interaction.followup.send("⚠️ เกิดข้อผิดพลาดขณะดึงข้อมูล")
+        print(f"Error in /price: {e}")
+        await interaction.followup.send("⚠️ เกิดข้อผิดพลาดในการดึงข้อมูล")
 
-# --- 3. ฟังก์ชันสำหรับทำ Autocomplete ---
-
-# แนะนำชื่อไอเทมขณะพิมพ์
+# Autocomplete ส่วนไอเทม
 @price.autocomplete('item_name')
 async def item_autocomplete(interaction: discord.Interaction, current: str):
-    return [
-        app_commands.Choice(name=name, value=name)
-        for name in bot.item_cache if current.lower() in name.lower()
-    ][:25] # Discord จำกัดที่ 25 รายการ
+    return [app_commands.Choice(name=n, value=n) for n in bot.item_cache if current.lower() in n.lower()][:25]
 
-# แนะนำชื่อลีกขณะพิมพ์
+# Autocomplete ส่วนลีก
 @price.autocomplete('league')
 async def league_autocomplete(interaction: discord.Interaction, current: str):
     leagues = ["Fate of the Vaal", "Standard", "Hardcore Fate of the Vaal"]
-    return [
-        app_commands.Choice(name=l, value=l)
-        for l in leagues if current.lower() in l.lower()
-    ]
+    return [app_commands.Choice(name=l, value=l) for l in leagues if current.lower() in l.lower()]
 
 bot.run(TOKEN)
