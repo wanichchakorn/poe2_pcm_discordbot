@@ -7,6 +7,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from thefuzz import process, fuzz
 
+# POE2_PCM_Bot(Discord) v0.2 by Shork_Shark
 # --- 1. Token ---
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -32,19 +33,38 @@ class POE2PCMBot(commands.Bot):
     @tasks.loop(minutes=60)
     async def update_item_cache(self):
         try:
-            # ดึงจากลีกหลักเพื่อนำชื่อมาแสดงเป็นตัวเลือก
+            # ดึงข้อมูลจากลีกหลัก (เช่น Fate of the Vaal)
             res = requests.get("https://poe2scout.com/api/items?league=Fate%20of%20the%20Vaal", timeout=10).json()
             items = res if isinstance(res, list) else res.get("items", [])
-            names = {i.get('text') or i.get('name') for i in items if i.get('text') or i.get('name')}
-            self.item_cache = sorted(list(names))
-            print(f"🔄 อัปเดตรายชื่อไอเทม {len(self.item_cache)} รายการสำเร็จ")
+            
+            new_cache = []
+            new_id_map = {}
+
+            for i in items:
+                name = i.get('text') or i.get('name')
+                item_id = i.get('id') # ดึง ID ของไอเทมมาด้วย
+            
+                if name and item_id:
+                    new_cache.append(name)
+                    new_id_map[name] = item_id # เก็บ Map ระหว่าง ชื่อ -> ID
+
+            # อัปเดตตัวแปรของคลาส
+            self.item_cache = sorted(list(set(new_cache)))
+            self.item_id_map = new_id_map
+            
+            print(f"🔄 อัปเดต Cache สำเร็จ: {len(self.item_cache)} รายการ (พร้อม ID)")
+        
+            # ตัวอย่างการตรวจสอบ ID ใน Console
+            if "Divine Orb" in self.item_id_map:
+                print(f"📍 Divine Orb ID: {self.item_id_map['Divine Orb']}")
+
         except Exception as e:
             print(f"⚠️ ไม่สามารถอัปเดต Cache ได้: {e}")
 
 bot = POE2PCMBot()
 
 # --- 2. คำสั่งหลัก /price (พร้อม Autocomplete) ---
-@bot.tree.command(name="price", description="บอทเช็คราคาไอเทมจาก POE2SCOUT version 0.2")
+@bot.tree.command(name="price", description="บอทเช็คราคาไอเทมจาก POE2SCOUT")
 @app_commands.describe(
     league="เลือกลีกที่ต้องการ",
     item_name="พิมพ์ชื่อไอเทม"
@@ -93,7 +113,7 @@ async def price(interaction: discord.Interaction, league: str, item_name: str):
             if found.get('iconUrl'):
                 embed.set_thumbnail(url=found.get('iconUrl'))
             
-            embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine} Ex")
+            embed.set_footer(text=f"เรท: 1 Chaos = {ex_per_chaos:.1f} Ex | 1 Div = {ex_per_divine:.3f} Ex")
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send(f"❌ ไม่พบข้อมูลไอเทม '{item_name}'")
@@ -122,5 +142,3 @@ async def league_autocomplete(interaction: discord.Interaction, current: str):
     ]
 
 bot.run(TOKEN)
-
-# POE2_PCM_Bot (Discord) by Shork_Shark
