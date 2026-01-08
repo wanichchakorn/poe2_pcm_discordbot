@@ -44,7 +44,7 @@ class POE2PCMBot(commands.Bot):
 bot = POE2PCMBot()
 
 # --- 2. คำสั่งหลัก /price (พร้อม Autocomplete) ---
-@bot.tree.command(name="price", description="บอทเช็คราคาไอเทม POE2SCOUT by Shork_Shark")
+@bot.tree.command(name="price", description="บอทเช็คราคาไอเทมจาก POE2SCOUT by Shork_Shark")
 @app_commands.describe(
     league="เลือกลีกที่ต้องการ",
     item_name="พิมพ์ชื่อไอเทม"
@@ -122,3 +122,5 @@ async def league_autocomplete(interaction: discord.Interaction, current: str):
     ]
 
 bot.run(TOKEN)
+
+# POE2_PCM_Bot (Discord) by Shork_Shark
