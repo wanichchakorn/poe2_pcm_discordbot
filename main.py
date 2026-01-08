@@ -88,24 +88,32 @@ def generate_chart_url(item_name, history_list):
     return f"https://quickchart.io/chart?c={quote(json.dumps(chart_config))}"
 
 # --- คำสั่งหลัก /price ---
-@bot.tree.command(name="price", description="เช็คราคาไอเทมและดูประวัติกราฟ")
+@bot.tree.command(name="price", description="เช็คราคาไอเทม POE2")
 @app_commands.describe(league="เลือกลีก", item_name="พิมพ์ชื่อไอเทม")
 async def price(interaction: discord.Interaction, league: str, item_name: str):
-    await interaction.response.defer() # ป้องกัน Timeout
+    await interaction.response.defer()
     
     try:
-        # 1. ค้นหาชื่อไอเทมที่ใกล้เคียงที่สุดจาก Cache
+        # 1. ค้นหาชื่อไอเทมและดึงข้อมูลพื้นฐานจาก Cache
         best_match, score = process.extractOne(item_name, bot.item_id_map.keys(), scorer=fuzz.token_set_ratio)
         if score < 60:
             await interaction.followup.send(f"❌ ไม่พบไอเทม '{item_name}'")
             return
 
         item_id = bot.item_id_map[best_match]
-        ex_id = bot.item_id_map.get("Exalted Orb", 450)
         headers = {'User-Agent': 'Mozilla/5.0'}
 
-        # 2. ดึงประวัติราคา (PairHistory)
+        # 2. ดึงข้อมูลเรทเงิน Divine ใน League ปัจจุบัน
+        leagues_res = requests.get("https://poe2scout.com/api/leagues", timeout=10).json()
+        ex_per_divine = 100 # ค่า Default
+        for l in leagues_res:
+            if l['value'] == league:
+                ex_per_divine = l.get('divinePrice', 100)
+                break
+
+        # 3. ดึงประวัติราคาและข้อมูลไอเทม
         history_url = "https://poe2scout.com/api/currencyExchange/PairHistory"
+        ex_id = bot.item_id_map.get("Exalted Orb", 450)
         h_res = requests.get(history_url, params={
             'league': league, 'currencyOneItemId': item_id, 
             'currencyTwoItemId': ex_id, 'limit': 24
@@ -113,23 +121,40 @@ async def price(interaction: discord.Interaction, league: str, item_name: str):
         
         history_list = h_res.get("History", [])
         
-        # 3. สร้าง Embed และแนบกราฟ
+        # ค้นหารูป Icon จากรายชื่อไอเทมทั้งหมด
+        items_res = requests.get("https://poe2scout.com/api/items", params={'league': league}, headers=headers).json()
+        items_list = items_res if isinstance(items_res, list) else items_res.get('items', [])
+        found_item_data = next((i for i in items_list if i.get('itemId') == item_id), {})
+        icon_url = found_item_data.get('iconUrl')
+
+        # 4. สร้าง Embed
         embed = discord.Embed(title=f"💎 Market Info: {best_match}", color=0x5de2e7)
         
         if history_list:
-            current_price = history_list[0].get('Data', {}).get('CurrencyOneData', {}).get('RelativePrice', 0)
-            embed.description = f"ราคาปัจจุบัน: **{float(current_price):,.2f} Ex**"
+            current_price_ex = float(history_list[0].get('Data', {}).get('CurrencyOneData', {}).get('RelativePrice', 0))
+            
+            # บรรทัดที่ 1: ราคาปัจจุบันในหน่วย Ex
+            # บรรทัดที่ 2: เรทเปรียบเทียบหน่วย Divine
+            price_in_div = current_price_ex / ex_per_divine
+            desc_text = f"ราคาปัจจุบัน: **{current_price_ex:,.2f} Ex**\n"
+            desc_text += f"เทียบเท่า: `{price_in_div:,.3f} Divine Orb` (Rate: 1 Div = {ex_per_divine} Ex)"
+            embed.description = desc_text
+
             chart_url = generate_chart_url(best_match, history_list)
             embed.set_image(url=chart_url)
         else:
-            embed.description = "⚠️ พบไอเทมแต่ไม่พบประวัติราคาล่าสุด"
+            embed.description = "⚠️ ไม่พบข้อมูลราคาล่าสุด"
 
-        embed.set_footer(text=f"League: {league} | Data from poe2scout.com")
+        # ใส่รูปไอเทมที่มุมขวาบน
+        if icon_url:
+            embed.set_thumbnail(url=icon_url)
+
+        embed.set_footer(text=f"League: {league} | Data: poe2scout.com")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        print(f"Error in /price: {e}")
-        await interaction.followup.send("⚠️ เกิดข้อผิดพลาดในการดึงข้อมูล")
+        print(f"Error in /price final: {e}")
+        await interaction.followup.send("⚠️ เกิดข้อผิดพลาดในการประมวลผลข้อมูล")
 
 # Autocomplete ส่วนไอเทม
 @price.autocomplete('item_name')
